@@ -16,3 +16,7 @@
 
 # Config files
 config/**
+
+# Misc development tool and OS cruft
+.DS_Store
+.vscode

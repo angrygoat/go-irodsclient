@@ -31,4 +31,7 @@ const (
 
 		PAM_AUTH_PLUGIN string = "PAM"
 	*/
+
+	// Environment variables
+	TestingPropertiesPath string = "TESTING_PROPERTIES"
 )
