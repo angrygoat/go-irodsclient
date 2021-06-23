@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cyverse/go-irodsclient/irods/auth"
+	"github.com/cyverse/go-irodsclient/irods/common"
 	"github.com/cyverse/go-irodsclient/irods/message"
 	"github.com/cyverse/go-irodsclient/irods/types"
 	"github.com/cyverse/go-irodsclient/irods/util"
@@ -23,9 +24,10 @@ type IRODSConnection struct {
 	ApplicationName string
 
 	// internal
-	connected     bool
-	socket        net.Conn
-	serverVersion *types.IRODSVersion
+	connected               bool
+	socket                  net.Conn
+	serverVersion           *types.IRODSVersion
+	generatedPasswordForPAM string // used for PAM auth
 }
 
 // NewIRODSConnection create a IRODSConnection
@@ -44,6 +46,11 @@ func (conn *IRODSConnection) GetVersion() *types.IRODSVersion {
 
 func (conn *IRODSConnection) requiresCSNegotiation() bool {
 	return conn.Account.ClientServerNegotiation
+}
+
+// GetGeneratedPasswordForPAMAuth returns generated Password For PAM Auth
+func (conn *IRODSConnection) GetGeneratedPasswordForPAMAuth() string {
+	return conn.generatedPasswordForPAM
 }
 
 // IsConnected returns if the connection is live
@@ -82,7 +89,7 @@ func (conn *IRODSConnection) Connect() error {
 
 	switch conn.Account.AuthenticationScheme {
 	case types.AuthSchemeNative:
-		err = conn.loginNative()
+		err = conn.loginNative(conn.Account.Password)
 	case types.AuthSchemeGSI:
 		err = conn.loginGSI()
 	case types.AuthSchemePAM:
@@ -165,24 +172,8 @@ func (conn *IRODSConnection) connectWithCSNegotiation() (*types.IRODSVersion, er
 
 		// Send negotiation result to server
 		negotiationResult := message.NewIRODSMessageCSNegotiation(status, policyResult)
-		negotiationResultMessage, err := negotiationResult.GetMessage()
-		if err != nil {
-			return nil, fmt.Errorf("Could not make a negotiation result message - %v", err)
-		}
-
-		err = conn.SendMessage(negotiationResultMessage)
-		if err != nil {
-			return nil, fmt.Errorf("Could not send a negotiation result message - %v", err)
-		}
-
-		// Server responds with version
-		versionMessage, err := conn.ReadMessage()
-		if err != nil {
-			return nil, fmt.Errorf("Could not receive a version message - %v", err)
-		}
-
 		version := message.IRODSMessageVersion{}
-		err = version.FromMessage(versionMessage)
+		err = conn.Request(negotiationResult, &version)
 		if err != nil {
 			return nil, fmt.Errorf("Could not receive a version message - %v", err)
 		}
@@ -205,24 +196,8 @@ func (conn *IRODSConnection) connectWithoutCSNegotiation() (*types.IRODSVersion,
 	// Send a startup message
 	util.LogInfo("Start up a new connection")
 	startup := message.NewIRODSMessageStartupPack(conn.Account, conn.ApplicationName, false)
-	startupMessage, err := startup.GetMessage()
-	if err != nil {
-		return nil, fmt.Errorf("Could not make a startup message - %v", err)
-	}
-
-	err = conn.SendMessage(startupMessage)
-	if err != nil {
-		return nil, fmt.Errorf("Could not send a startup message - %v", err)
-	}
-
-	// Server responds with version
-	versionMessage, err := conn.ReadMessage()
-	if err != nil {
-		return nil, fmt.Errorf("Could not receive a version message - %v", err)
-	}
-
 	version := message.IRODSMessageVersion{}
-	err = version.FromMessage(versionMessage)
+	err := conn.Request(startup, &version)
 	if err != nil {
 		return nil, fmt.Errorf("Could not receive a version message - %v", err)
 	}
@@ -245,7 +220,8 @@ func (conn *IRODSConnection) sslStartup() error {
 	}
 
 	sslConf := &tls.Config{
-		RootCAs: caCertPool,
+		RootCAs:    caCertPool,
+		ServerName: conn.Account.Host,
 	}
 
 	// Create a side connection using the existing socket
@@ -293,62 +269,25 @@ func (conn *IRODSConnection) sslStartup() error {
 	return nil
 }
 
-func (conn *IRODSConnection) loginNative() error {
+func (conn *IRODSConnection) loginNative(password string) error {
 	util.LogInfo("Logging in using native authentication method")
 
 	// authenticate
 	authRequest := message.NewIRODSMessageAuthRequest()
-	authRequestMessage, err := authRequest.GetMessage()
-	if err != nil {
-		return fmt.Errorf("Could not make a login request message - %v", err)
-	}
-
-	err = conn.SendMessage(authRequestMessage)
-	if err != nil {
-		return fmt.Errorf("Could not send a login request message - %v", err)
-	}
-
-	// challenge
-	authChallengeMessage, err := conn.ReadMessage()
-	if err != nil {
-		return fmt.Errorf("Could not receive an authentication challenge message - %v", err)
-	}
-
 	authChallenge := message.IRODSMessageAuthChallenge{}
-	err = authChallenge.FromMessage(authChallengeMessage)
+	err := conn.Request(authRequest, &authChallenge)
 	if err != nil {
 		return fmt.Errorf("Could not receive an authentication challenge message body")
 	}
 
-	encodedPassword, err := auth.GenerateAuthResponse(authChallenge.Challenge, conn.Account.Password)
+	encodedPassword, err := auth.GenerateAuthResponse(authChallenge.Challenge, password)
 	if err != nil {
 		return fmt.Errorf("Could not generate an authentication response - %v", err)
 	}
 
 	authResponse := message.NewIRODSMessageAuthResponse(encodedPassword, conn.Account.ProxyUser)
-	authResponseMessage, err := authResponse.GetMessage()
-	if err != nil {
-		return fmt.Errorf("Could not make a login response message - %v", err)
-	}
-
-	err = conn.SendMessage(authResponseMessage)
-	if err != nil {
-		return fmt.Errorf("Could not send a login response message - %v", err)
-	}
-
-	authResultMessage, err := conn.ReadMessage()
-	if err != nil {
-		return fmt.Errorf("Could not receive a login result message - %v", err)
-	}
-
 	authResult := message.IRODSMessageAuthResult{}
-	err = authResult.FromMessage(authResultMessage)
-	if err != nil {
-		return fmt.Errorf("Could not receive a login result message body - %v", err)
-	}
-
-	err = authResult.CheckError()
-	return err
+	return conn.RequestAndCheck(authResponse, &authResult)
 }
 
 func (conn *IRODSConnection) loginGSI() error {
@@ -356,7 +295,31 @@ func (conn *IRODSConnection) loginGSI() error {
 }
 
 func (conn *IRODSConnection) loginPAM() error {
-	return nil
+	util.LogInfo("Logging in using pam authentication method")
+
+	// Check whether ssl has already started, if not, start ssl.
+	if _, ok := conn.socket.(*tls.Conn); !ok {
+		return fmt.Errorf("connection should be using SSL")
+	}
+
+	ttl := conn.Account.PamTTL
+	if ttl <= 0 {
+		ttl = 1
+	}
+
+	// authenticate
+	pamAuthRequest := message.NewIRODSMessagePamAuthRequest(conn.Account.ClientUser, conn.Account.Password, ttl)
+	pamAuthResponse := message.IRODSMessagePamAuthResponse{}
+	err := conn.Request(pamAuthRequest, &pamAuthResponse)
+	if err != nil {
+		return fmt.Errorf("Could not receive an authentication challenge message")
+	}
+
+	// save irods generated password for possible future use
+	conn.generatedPasswordForPAM = pamAuthResponse.GeneratedPassword
+
+	// retry native auth with generated password
+	return conn.loginNative(conn.generatedPasswordForPAM)
 }
 
 // Disconnect disconnects
@@ -558,4 +521,106 @@ func (conn *IRODSConnection) ReadMessage() (*message.IRODSMessage, error) {
 }
 
 func (conn *IRODSConnection) release(val bool) {
+}
+
+// Commit a transaction. This is useful in combination with the NO_COMMIT_FLAG.
+// Usage is limited to privileged accounts.
+func (conn *IRODSConnection) Commit() error {
+	return conn.endTransaction(true)
+}
+
+// Rollback a transaction. This is useful in combination with the NO_COMMIT_FLAG.
+// It can also be used to clear the current database transaction if there are no staged operations,
+// just to refresh the view on the database for future queries.
+// Usage is limited to privileged accounts.
+func (conn *IRODSConnection) Rollback() error {
+	return conn.endTransaction(false)
+}
+
+// PoorMansRollback rolls back a transaction as a nonprivileged account, bypassing API limitations.
+// A nonprivileged account cannot have staged operations, so rollback is always a no-op.
+// The usage for this function, is that rolling back the current database transaction still will start
+// a new one, so that future queries will see all changes that where made up to calling this function.
+func (conn *IRODSConnection) PoorMansRollback() error {
+	dummyCol := fmt.Sprintf("/%s/home/%s", conn.Account.ClientZone, conn.Account.ClientUser)
+
+	return conn.poorMansEndTransaction(dummyCol, false)
+}
+
+func (conn *IRODSConnection) endTransaction(commit bool) error {
+	request := message.NewIRODSMessageEndTransactionRequest(commit)
+	requestMessage, err := request.GetMessage()
+	if err != nil {
+		return fmt.Errorf("Could not make a end transaction request message - %v", err)
+	}
+
+	err = conn.SendMessage(requestMessage)
+	if err != nil {
+		return fmt.Errorf("Could not send a end transaction request message - %v", err)
+	}
+
+	// Server responds with results
+	responseMessage, err := conn.ReadMessage()
+	if err != nil {
+		return fmt.Errorf("Could not receive a end transaction response message - %v", err)
+	}
+
+	response := message.IRODSMessageEndTransactionResponse{}
+	err = response.FromMessage(responseMessage)
+	if err != nil {
+		return fmt.Errorf("Could not receive a end transaction response message - %v", err)
+	}
+
+	err = response.CheckError()
+	return err
+}
+
+func (conn *IRODSConnection) poorMansEndTransaction(dummyCol string, commit bool) error {
+	request := message.NewIRODSMessageModColRequest(dummyCol)
+
+	if commit {
+		request.AddKeyVal(common.COLLECTION_TYPE_KW, "NULL_SPECIAL_VALUE")
+	}
+
+	requestMessage, err := request.GetMessage()
+	if err != nil {
+		return fmt.Errorf("Could not make a poor mans end transaction request message - %v", err)
+	}
+
+	err = conn.SendMessage(requestMessage)
+	if err != nil {
+		return fmt.Errorf("Could not send a poor mans end transaction request message - %v", err)
+	}
+
+	// Server responds with results
+	responseMessage, err := conn.ReadMessage()
+	if err != nil {
+		return fmt.Errorf("Could not receive a poor mans end transaction response message - %v", err)
+	}
+
+	response := message.IRODSMessageModColResponse{}
+	err = response.FromMessage(responseMessage)
+	if err != nil {
+		return fmt.Errorf("Could not receive a poor mans end transaction response message - %v", err)
+	}
+
+	if !commit {
+		// We do expect an error on rollback because we didn't supply enough parameters
+		if common.ErrorCode(response.Result) == common.CAT_INVALID_ARGUMENT {
+			return nil
+		}
+
+		if response.Result == 0 {
+			return fmt.Errorf("expected an error, but transaction completed successfully")
+		}
+	}
+
+	err = response.CheckError()
+	return err
+}
+
+// RawBind binds an IRODSConnection to a raw net.Conn socket - to be used for e.g. a proxy server setup
+func (conn *IRODSConnection) RawBind(socket net.Conn) {
+	conn.connected = true
+	conn.socket = socket
 }

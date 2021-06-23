@@ -1,8 +1,6 @@
 package session
 
 import (
-	"log"
-
 	"github.com/cyverse/go-irodsclient/irods/connection"
 	"github.com/cyverse/go-irodsclient/irods/types"
 	"github.com/cyverse/go-irodsclient/irods/util"
@@ -17,7 +15,7 @@ type IRODSSession struct {
 }
 
 // NewIRODSSession create a IRODSSession
-func NewIRODSSession(account *types.IRODSAccount, config *IRODSSessionConfig) *IRODSSession {
+func NewIRODSSession(account *types.IRODSAccount, config *IRODSSessionConfig) (*IRODSSession, error) {
 	sess := IRODSSession{
 		Account: account,
 		Config:  config,
@@ -35,11 +33,11 @@ func NewIRODSSession(account *types.IRODSAccount, config *IRODSSessionConfig) *I
 	p, err := pool.NewChannelPool(&poolConfig)
 	if err != nil {
 		util.LogErrorf("Cannot create a new connection pool - %v", err)
-		log.Panic(err)
+		return nil, err
 	}
 
 	sess.ConnectionPool = p
-	return &sess
+	return &sess, nil
 }
 
 func (sess *IRODSSession) connOpen() (interface{}, error) {
@@ -69,6 +67,26 @@ func (sess *IRODSSession) AcquireConnection() (*connection.IRODSConnection, erro
 	}
 
 	conn := v.(*connection.IRODSConnection)
+
+	if sess.Config.StartNewTransaction {
+		// Each irods connection automatically starts a database transaction at initial setup.
+		// All queries against irods using a connection will give results corresponding to the time
+		// the connection was made, or since the last change using the very same connection.
+		// I.e. if connections 1 and 2 are created at the same time, and connection 1 does an update,
+		// connection 2 will not see it until any other change is made using connection 2.
+		// The connection we get here from the connection pool might be old, and we might miss
+		// changes that happened in parallel connections. We fix this by doing a rollback operation,
+		// which will do nothing to the database (there are no operations staged for commit/rollback),
+		// but which will close the current transaction and starts a new one - refreshing the view for
+		// future queries.
+		err = conn.PoorMansRollback()
+		if err != nil {
+			util.LogErrorf("Could not perform poor man rollback for the connection - %v", err)
+			_ = sess.ReturnConnection(conn)
+			return nil, err
+		}
+	}
+
 	return conn, nil
 }
 

@@ -17,7 +17,7 @@ var (
 func setup() {
 	util.SetLogLevel(9)
 
-	yaml, err := ioutil.ReadFile("../../config/test_account.yml")
+	yaml, err := ioutil.ReadFile("../config/test_account.yml")
 	if err != nil {
 		util.LogErrorf("err - %v", err)
 		panic(err)
@@ -32,7 +32,11 @@ func setup() {
 	account.ClientServerNegotiation = false
 	util.LogDebugf("Account : %v", account.MaskSensitiveData())
 
-	fs = NewFileSystemWithDefault(account, "go-irodsclient-test")
+	fs, err = NewFileSystemWithDefault(account, "go-irodsclient-test")
+	if err != nil {
+		util.LogErrorf("err - %v", err)
+		panic(err)
+	}
 }
 
 func shutdown() {
@@ -59,10 +63,50 @@ func TestListEntries(t *testing.T) {
 	shutdown()
 }
 
+func TestListEntriesByMeta(t *testing.T) {
+	setup()
+
+	entries, err := fs.SearchByMeta("ipc_UUID", "3241af9a-c199-11e5-bd90-3c4a92e4a804")
+	if err != nil {
+		t.Errorf("err - %v", err)
+		panic(err)
+	}
+
+	if len(entries) == 0 {
+		util.LogDebug("There is no entries")
+	} else {
+		for _, entry := range entries {
+			util.LogDebugf("Entry : %v", entry)
+		}
+	}
+
+	shutdown()
+}
+
+func TestListACLs(t *testing.T) {
+	setup()
+
+	acls, err := fs.ListACLsWithGroupUsers("/iplant/home/iychoi/all.fna.tar.gz")
+	if err != nil {
+		t.Errorf("err - %v", err)
+		panic(err)
+	}
+
+	if len(acls) == 0 {
+		util.LogDebug("There is no acls")
+	} else {
+		for _, acl := range acls {
+			util.LogDebugf("ACL : %v", acl)
+		}
+	}
+
+	shutdown()
+}
+
 func TestReadWrite(t *testing.T) {
 	setup()
 
-	text := "HELLO WORLD!"
+	text := "HELLO WORLD!<?!'\">"
 
 	handle, err := fs.CreateFile("/iplant/home/iychoi/testnewfile.txt", "")
 	if err != nil {

@@ -54,24 +54,8 @@ func GetCollection(conn *connection.IRODSConnection, path string) (*types.IRODSC
 	condVal := fmt.Sprintf("= '%s'", path)
 	query.AddCondition(common.ICAT_COLUMN_COLL_NAME, condVal)
 
-	queryMessage, err := query.GetMessage()
-	if err != nil {
-		return nil, fmt.Errorf("Could not make a collection query message - %v", err)
-	}
-
-	err = conn.SendMessage(queryMessage)
-	if err != nil {
-		return nil, fmt.Errorf("Could not send a collection query message - %v", err)
-	}
-
-	// Server responds with results
-	queryResultMessage, err := conn.ReadMessage()
-	if err != nil {
-		return nil, fmt.Errorf("Could not receive a collection query result message - %v", err)
-	}
-
 	queryResult := message.IRODSMessageQueryResult{}
-	err = queryResult.FromMessage(queryResultMessage)
+	err := conn.Request(query, &queryResult)
 	if err != nil {
 		return nil, fmt.Errorf("Could not receive a collection query result message - %v", err)
 	}
@@ -140,8 +124,8 @@ func GetCollection(conn *connection.IRODSConnection, path string) (*types.IRODSC
 	}, nil
 }
 
-// GetCollectionMeta returns a colleciton metadata for the path
-func GetCollectionMeta(conn *connection.IRODSConnection, path string) ([]*types.IRODSMeta, error) {
+// ListCollectionMeta returns a colleciton metadata for the path
+func ListCollectionMeta(conn *connection.IRODSConnection, path string) ([]*types.IRODSMeta, error) {
 	if conn == nil || !conn.IsConnected() {
 		return nil, fmt.Errorf("connection is nil or disconnected")
 	}
@@ -160,24 +144,8 @@ func GetCollectionMeta(conn *connection.IRODSConnection, path string) ([]*types.
 		condVal := fmt.Sprintf("= '%s'", path)
 		query.AddCondition(common.ICAT_COLUMN_COLL_NAME, condVal)
 
-		queryMessage, err := query.GetMessage()
-		if err != nil {
-			return nil, fmt.Errorf("Could not make a collection metadata query message - %v", err)
-		}
-
-		err = conn.SendMessage(queryMessage)
-		if err != nil {
-			return nil, fmt.Errorf("Could not send a collection metadata query message - %v", err)
-		}
-
-		// Server responds with results
-		queryResultMessage, err := conn.ReadMessage()
-		if err != nil {
-			return nil, fmt.Errorf("Could not receive a collection metadata query result message - %v", err)
-		}
-
 		queryResult := message.IRODSMessageQueryResult{}
-		err = queryResult.FromMessage(queryResultMessage)
+		err := conn.Request(query, &queryResult)
 		if err != nil {
 			return nil, fmt.Errorf("Could not receive a collection metadata query result message - %v", err)
 		}
@@ -241,6 +209,88 @@ func GetCollectionMeta(conn *connection.IRODSConnection, path string) ([]*types.
 	return metas, nil
 }
 
+// ListCollectionAccess returns collection accesses for the path
+func ListCollectionAccess(conn *connection.IRODSConnection, path string) ([]*types.IRODSAccess, error) {
+	if conn == nil || !conn.IsConnected() {
+		return nil, fmt.Errorf("connection is nil or disconnected")
+	}
+
+	accesses := []*types.IRODSAccess{}
+
+	continueQuery := true
+	continueIndex := 0
+	for continueQuery {
+		query := message.NewIRODSMessageQuery(common.MaxQueryRows, continueIndex, 0, 0)
+		query.AddSelect(common.ICAT_COLUMN_COLL_ACCESS_NAME, 1)
+		query.AddSelect(common.ICAT_COLUMN_USER_NAME, 1)
+		query.AddSelect(common.ICAT_COLUMN_USER_ZONE, 1)
+		query.AddSelect(common.ICAT_COLUMN_USER_TYPE, 1)
+
+		condVal := fmt.Sprintf("= '%s'", path)
+		query.AddCondition(common.ICAT_COLUMN_COLL_NAME, condVal)
+
+		queryResult := message.IRODSMessageQueryResult{}
+		err := conn.Request(query, &queryResult)
+		if err != nil {
+			return nil, fmt.Errorf("Could not receive a collection access query result message - %v", err)
+		}
+
+		if queryResult.RowCount == 0 {
+			break
+		}
+
+		if queryResult.AttributeCount > len(queryResult.SQLResult) {
+			return nil, fmt.Errorf("Could not receive collection access attributes - requires %d, but received %d attributes", queryResult.AttributeCount, len(queryResult.SQLResult))
+		}
+
+		pagenatedAccesses := make([]*types.IRODSAccess, queryResult.RowCount, queryResult.RowCount)
+
+		for attr := 0; attr < queryResult.AttributeCount; attr++ {
+			sqlResult := queryResult.SQLResult[attr]
+			if len(sqlResult.Values) != queryResult.RowCount {
+				return nil, fmt.Errorf("Could not receive collection access rows - requires %d, but received %d attributes", queryResult.RowCount, len(sqlResult.Values))
+			}
+
+			for row := 0; row < queryResult.RowCount; row++ {
+				value := sqlResult.Values[row]
+
+				if pagenatedAccesses[row] == nil {
+					// create a new
+					pagenatedAccesses[row] = &types.IRODSAccess{
+						Path:        path,
+						UserName:    "",
+						UserZone:    "",
+						AccessLevel: types.IRODSAccessLevelNone,
+						UserType:    types.IRODSUserRodsUser,
+					}
+				}
+
+				switch sqlResult.AttributeIndex {
+				case int(common.ICAT_COLUMN_COLL_ACCESS_NAME):
+					pagenatedAccesses[row].AccessLevel = types.IRODSAccessLevelType(value)
+				case int(common.ICAT_COLUMN_USER_TYPE):
+					pagenatedAccesses[row].UserType = types.IRODSUserType(value)
+				case int(common.ICAT_COLUMN_USER_NAME):
+					pagenatedAccesses[row].UserName = value
+				case int(common.ICAT_COLUMN_USER_ZONE):
+					pagenatedAccesses[row].UserZone = value
+				default:
+					// ignore
+				}
+			}
+		}
+
+		accesses = append(accesses, pagenatedAccesses...)
+
+		continueIndex = queryResult.ContinueIndex
+		if continueIndex == 0 {
+			continueQuery = false
+		}
+	}
+
+	return accesses, nil
+}
+
 // ListSubCollections lists subcollections in the given collection
 func ListSubCollections(conn *connection.IRODSConnection, path string) ([]*types.IRODSCollection, error) {
 	if conn == nil || !conn.IsConnected() {
@@ -262,24 +312,8 @@ func ListSubCollections(conn *connection.IRODSConnection, path string) ([]*types
 		condVal := fmt.Sprintf("= '%s'", path)
 		query.AddCondition(common.ICAT_COLUMN_COLL_PARENT_NAME, condVal)
 
-		queryMessage, err := query.GetMessage()
-		if err != nil {
-			return nil, fmt.Errorf("Could not make a collection query message - %v", err)
-		}
-
-		err = conn.SendMessage(queryMessage)
-		if err != nil {
-			return nil, fmt.Errorf("Could not send a collection query message - %v", err)
-		}
-
-		// Server responds with results
-		queryResultMessage, err := conn.ReadMessage()
-		if err != nil {
-			return nil, fmt.Errorf("Could not receive a collection query result message - %v", err)
-		}
-
 		queryResult := message.IRODSMessageQueryResult{}
-		err = queryResult.FromMessage(queryResultMessage)
+		err := conn.Request(query, &queryResult)
 		if err != nil {
 			return nil, fmt.Errorf("Could not receive a collection query result message - %v", err)
 		}
@@ -363,30 +397,8 @@ func CreateCollection(conn *connection.IRODSConnection, path string, recurse boo
 	}
 
 	request := message.NewIRODSMessageMkcolRequest(path, recurse)
-	requestMessage, err := request.GetMessage()
-	if err != nil {
-		return fmt.Errorf("Could not make a collection creation request message - %v", err)
-	}
-
-	err = conn.SendMessage(requestMessage)
-	if err != nil {
-		return fmt.Errorf("Could not send a collection creation request message - %v", err)
-	}
-
-	// Server responds with results
-	responseMessage, err := conn.ReadMessage()
-	if err != nil {
-		return fmt.Errorf("Could not receive a collection creation response message - %v", err)
-	}
-
 	response := message.IRODSMessageMkcolResponse{}
-	err = response.FromMessage(responseMessage)
-	if err != nil {
-		return fmt.Errorf("Could not receive a collection creation response message - %v", err)
-	}
-
-	err = response.CheckError()
-	return err
+	return conn.RequestAndCheck(request, &response)
 }
 
 // DeleteCollection deletes a collection for the path
@@ -396,29 +408,8 @@ func DeleteCollection(conn *connection.IRODSConnection, path string, recurse boo
 	}
 
 	request := message.NewIRODSMessageRmcolRequest(path, recurse, force)
-	requestMessage, err := request.GetMessage()
-	if err != nil {
-		return fmt.Errorf("Could not make a collection deletion request message - %v", err)
-	}
-
-	err = conn.SendMessage(requestMessage)
-	if err != nil {
-		return fmt.Errorf("Could not send a collection deletion request message - %v", err)
-	}
-
-	// Server responds with results
-	responseMessage, err := conn.ReadMessage()
-	if err != nil {
-		return fmt.Errorf("Could not receive a collection deletion response message - %v", err)
-	}
-
 	response := message.IRODSMessageRmcolResponse{}
-	err = response.FromMessage(responseMessage)
-	if err != nil {
-		return fmt.Errorf("Could not receive a collection deletion response message - %v", err)
-	}
-
-	err = response.CheckError()
+	err := conn.RequestAndCheck(request, &response)
 	if err != nil {
 		return err
 	}
@@ -451,28 +442,277 @@ func MoveCollection(conn *connection.IRODSConnection, srcPath string, destPath s
 	}
 
 	request := message.NewIRODSMessageMvcolRequest(srcPath, destPath)
-	requestMessage, err := request.GetMessage()
-	if err != nil {
-		return fmt.Errorf("Could not make a collection move request message - %v", err)
-	}
-
-	err = conn.SendMessage(requestMessage)
-	if err != nil {
-		return fmt.Errorf("Could not send a collection move request message - %v", err)
-	}
-
-	// Server responds with results
-	responseMessage, err := conn.ReadMessage()
-	if err != nil {
-		return fmt.Errorf("Could not receive a collection move response message - %v", err)
-	}
-
 	response := message.IRODSMessageMvcolResponse{}
-	err = response.FromMessage(responseMessage)
-	if err != nil {
-		return fmt.Errorf("Could not receive a collection move response message - %v", err)
+	return conn.RequestAndCheck(request, &response)
+}
+
+// AddCollectionMeta sets metadata of a data object for the path to the given key values.
+// metadata.AVUID is ignored
+func AddCollectionMeta(conn *connection.IRODSConnection, path string, metadata *types.IRODSMeta) error {
+	if conn == nil || !conn.IsConnected() {
+		return fmt.Errorf("connection is nil or disconnected")
 	}
 
-	err = response.CheckError()
-	return err
+	request := message.NewIRODSMessageAddMetadataRequest(types.IRODSCollectionMetaItemType, path, metadata)
+	response := message.IRODSMessageModMetaResponse{}
+	return conn.RequestAndCheck(request, &response)
+}
+
+// DeleteCollectionMeta sets metadata of a data object for the path to the given key values.
+// The metadata AVU is selected on basis of AVUID if it is supplied, otherwise on basis of Name, Value and Units.
+func DeleteCollectionMeta(conn *connection.IRODSConnection, path string, metadata *types.IRODSMeta) error {
+	if conn == nil || !conn.IsConnected() {
+		return fmt.Errorf("connection is nil or disconnected")
+	}
+
+	var request *message.IRODSMessageModMetaRequest
+
+	if metadata.AVUID != 0 {
+		request = message.NewIRODSMessageRemoveMetadataByIDRequest(types.IRODSCollectionMetaItemType, path, metadata.AVUID)
+	} else if metadata.Units == "" && metadata.Value == "" {
+		request = message.NewIRODSMessageRemoveMetadataWildcardRequest(types.IRODSCollectionMetaItemType, path, metadata.Name)
+	} else {
+		request = message.NewIRODSMessageRemoveMetadataRequest(types.IRODSCollectionMetaItemType, path, metadata)
+	}
+
+	response := message.IRODSMessageModMetaResponse{}
+	return conn.RequestAndCheck(request, &response)
+}
+
+// SearchCollectionsByMeta searches collections by metadata
+func SearchCollectionsByMeta(conn *connection.IRODSConnection, metaName string, metaValue string) ([]*types.IRODSCollection, error) {
+	if conn == nil || !conn.IsConnected() {
+		return nil, fmt.Errorf("connection is nil or disconnected")
+	}
+
+	collections := []*types.IRODSCollection{}
+
+	continueQuery := true
+	continueIndex := 0
+	for continueQuery {
+		query := message.NewIRODSMessageQuery(common.MaxQueryRows, continueIndex, 0, 0)
+		query.AddSelect(common.ICAT_COLUMN_COLL_ID, 1)
+		query.AddSelect(common.ICAT_COLUMN_COLL_NAME, 1)
+		query.AddSelect(common.ICAT_COLUMN_COLL_OWNER_NAME, 1)
+		query.AddSelect(common.ICAT_COLUMN_COLL_CREATE_TIME, 1)
+		query.AddSelect(common.ICAT_COLUMN_COLL_MODIFY_TIME, 1)
+
+		metaNameCondVal := fmt.Sprintf("= '%s'", metaName)
+		query.AddCondition(common.ICAT_COLUMN_META_COLL_ATTR_NAME, metaNameCondVal)
+		metaValueCondVal := fmt.Sprintf("= '%s'", metaValue)
+		query.AddCondition(common.ICAT_COLUMN_META_COLL_ATTR_VALUE, metaValueCondVal)
+
+		queryResult := message.IRODSMessageQueryResult{}
+		err := conn.Request(query, &queryResult)
+		if err != nil {
+			return nil, fmt.Errorf("Could not receive a collection query result message - %v", err)
+		}
+
+		if queryResult.RowCount == 0 {
+			break
+		}
+
+		if queryResult.AttributeCount > len(queryResult.SQLResult) {
+			return nil, fmt.Errorf("Could not receive collection attributes - requires %d, but received %d attributes", queryResult.AttributeCount, len(queryResult.SQLResult))
+		}
+
+		pagenatedCollections := make([]*types.IRODSCollection, queryResult.RowCount, queryResult.RowCount)
+
+		for attr := 0; attr < queryResult.AttributeCount; attr++ {
+			sqlResult := queryResult.SQLResult[attr]
+			if len(sqlResult.Values) != queryResult.RowCount {
+				return nil, fmt.Errorf("Could not receive collection rows - requires %d, but received %d attributes", queryResult.RowCount, len(sqlResult.Values))
+			}
+
+			for row := 0; row < queryResult.RowCount; row++ {
+				value := sqlResult.Values[row]
+
+				if pagenatedCollections[row] == nil {
+					// create a new
+					pagenatedCollections[row] = &types.IRODSCollection{
+						ID:         -1,
+						Path:       "",
+						Name:       "",
+						Owner:      "",
+						CreateTime: time.Time{},
+						ModifyTime: time.Time{},
+					}
+				}
+
+				switch sqlResult.AttributeIndex {
+				case int(common.ICAT_COLUMN_COLL_ID):
+					cID, err := strconv.ParseInt(value, 10, 64)
+					if err != nil {
+						return nil, fmt.Errorf("Could not parse collection id - %s", value)
+					}
+					pagenatedCollections[row].ID = cID
+				case int(common.ICAT_COLUMN_COLL_NAME):
+					pagenatedCollections[row].Path = value
+					pagenatedCollections[row].Name = util.GetIRODSPathFileName(value)
+				case int(common.ICAT_COLUMN_COLL_OWNER_NAME):
+					pagenatedCollections[row].Owner = value
+				case int(common.ICAT_COLUMN_COLL_CREATE_TIME):
+					cT, err := util.GetIRODSDateTime(value)
+					if err != nil {
+						return nil, fmt.Errorf("Could not parse create time - %s", value)
+					}
+					pagenatedCollections[row].CreateTime = cT
+				case int(common.ICAT_COLUMN_COLL_MODIFY_TIME):
+					mT, err := util.GetIRODSDateTime(value)
+					if err != nil {
+						return nil, fmt.Errorf("Could not parse modify time - %s", value)
+					}
+					pagenatedCollections[row].ModifyTime = mT
+				default:
+					// ignore
+				}
+			}
+		}
+
+		collections = append(collections, pagenatedCollections...)
+
+		continueIndex = queryResult.ContinueIndex
+		if continueIndex == 0 {
+			continueQuery = false
+		}
+	}
+
+	return collections, nil
+}
+
+// SearchCollectionsByMetaWildcard searches collections by metadata
+// Caution: This is a very slow operation
+func SearchCollectionsByMetaWildcard(conn *connection.IRODSConnection, metaName string, metaValue string) ([]*types.IRODSCollection, error) {
+	if conn == nil || !conn.IsConnected() {
+		return nil, fmt.Errorf("connection is nil or disconnected")
+	}
+
+	collections := []*types.IRODSCollection{}
+
+	continueQuery := true
+	continueIndex := 0
+	for continueQuery {
+		query := message.NewIRODSMessageQuery(common.MaxQueryRows, continueIndex, 0, 0)
+		query.AddSelect(common.ICAT_COLUMN_COLL_ID, 1)
+		query.AddSelect(common.ICAT_COLUMN_COLL_NAME, 1)
+		query.AddSelect(common.ICAT_COLUMN_COLL_OWNER_NAME, 1)
+		query.AddSelect(common.ICAT_COLUMN_COLL_CREATE_TIME, 1)
+		query.AddSelect(common.ICAT_COLUMN_COLL_MODIFY_TIME, 1)
+
+		metaNameCondVal := fmt.Sprintf("= '%s'", metaName)
+		query.AddCondition(common.ICAT_COLUMN_META_COLL_ATTR_NAME, metaNameCondVal)
+		metaValueCondVal := fmt.Sprintf("like '%s'", metaValue)
+		query.AddCondition(common.ICAT_COLUMN_META_COLL_ATTR_VALUE, metaValueCondVal)
+
+		queryResult := message.IRODSMessageQueryResult{}
+		err := conn.Request(query, &queryResult)
+		if err != nil {
+			return nil, fmt.Errorf("Could not receive a collection query result message - %v", err)
+		}
+
+		if queryResult.RowCount == 0 {
+			break
+		}
+
+		if queryResult.AttributeCount > len(queryResult.SQLResult) {
+			return nil, fmt.Errorf("Could not receive collection attributes - requires %d, but received %d attributes", queryResult.AttributeCount, len(queryResult.SQLResult))
+		}
+
+		pagenatedCollections := make([]*types.IRODSCollection, queryResult.RowCount, queryResult.RowCount)
+
+		for attr := 0; attr < queryResult.AttributeCount; attr++ {
+			sqlResult := queryResult.SQLResult[attr]
+			if len(sqlResult.Values) != queryResult.RowCount {
+				return nil, fmt.Errorf("Could not receive data object rows - requires %d, but received %d attributes", queryResult.RowCount, len(sqlResult.Values))
+			}
+
+			for attr := 0; attr < queryResult.AttributeCount; attr++ {
+				sqlResult := queryResult.SQLResult[attr]
+				if len(sqlResult.Values) != queryResult.RowCount {
+					return nil, fmt.Errorf("Could not receive collection rows - requires %d, but received %d attributes", queryResult.RowCount, len(sqlResult.Values))
+				}
+
+				for row := 0; row < queryResult.RowCount; row++ {
+					value := sqlResult.Values[row]
+
+					if pagenatedCollections[row] == nil {
+						// create a new
+						pagenatedCollections[row] = &types.IRODSCollection{
+							ID:         -1,
+							Path:       "",
+							Name:       "",
+							Owner:      "",
+							CreateTime: time.Time{},
+							ModifyTime: time.Time{},
+						}
+					}
+
+					switch sqlResult.AttributeIndex {
+					case int(common.ICAT_COLUMN_COLL_ID):
+						cID, err := strconv.ParseInt(value, 10, 64)
+						if err != nil {
+							return nil, fmt.Errorf("Could not parse collection id - %s", value)
+						}
+						pagenatedCollections[row].ID = cID
+					case int(common.ICAT_COLUMN_COLL_NAME):
+						pagenatedCollections[row].Path = value
+						pagenatedCollections[row].Name = util.GetIRODSPathFileName(value)
+					case int(common.ICAT_COLUMN_COLL_OWNER_NAME):
+						pagenatedCollections[row].Owner = value
+					case int(common.ICAT_COLUMN_COLL_CREATE_TIME):
+						cT, err := util.GetIRODSDateTime(value)
+						if err != nil {
+							return nil, fmt.Errorf("Could not parse create time - %s", value)
+						}
+						pagenatedCollections[row].CreateTime = cT
+					case int(common.ICAT_COLUMN_COLL_MODIFY_TIME):
+						mT, err := util.GetIRODSDateTime(value)
+						if err != nil {
+							return nil, fmt.Errorf("Could not parse modify time - %s", value)
+						}
+						pagenatedCollections[row].ModifyTime = mT
+					default:
+						// ignore
+					}
+				}
+			}
+		}
+
+		collections = append(collections, pagenatedCollections...)
+
+		continueIndex = queryResult.ContinueIndex
+		if continueIndex == 0 {
+			continueQuery = false
+		}
+	}
+
+	return collections, nil
+}
+
+// ChangeAccessControlCollection changes access control on a data object.
+func ChangeAccessControlCollection(conn *connection.IRODSConnection, path string, access types.IRODSAccessLevelType, userName, zoneName string, recursive, adminFlag bool) error {
+	if conn == nil || !conn.IsConnected() {
+		return fmt.Errorf("connection is nil or disconnected")
+	}
+
+	request := message.NewIRODSMessageModAccessRequest(access.ChmodString(), userName, zoneName, path, recursive, adminFlag)
+	response := message.IRODSMessageModAccessResponse{}
+	return conn.RequestAndCheck(request, &response)
+}
+
+// SetInheritAccessControl sets the inherit bit on a collection.
+func SetInheritAccessControl(conn *connection.IRODSConnection, path string, inherit, recursive, adminFlag bool) error {
+	if conn == nil || !conn.IsConnected() {
+		return fmt.Errorf("connection is nil or disconnected")
+	}
+
+	inheritStr := "inherit"
+
+	if !inherit {
+		inheritStr = "noinherit"
+	}
+
+	request := message.NewIRODSMessageModAccessRequest(inheritStr, "", "", path, recursive, adminFlag)
+	response := message.IRODSMessageModAccessResponse{}
+	return conn.RequestAndCheck(request, &response)
 }

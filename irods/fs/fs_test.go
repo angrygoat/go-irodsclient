@@ -20,7 +20,7 @@ var (
 func setup() {
 	util.SetLogLevel(9)
 
-	yaml, err := ioutil.ReadFile("../../../config/test_account.yml")
+	yaml, err := ioutil.ReadFile("../../config/test_account.yml")
 	if err != nil {
 		util.LogErrorf("err - %v", err)
 		panic(err)
@@ -104,10 +104,10 @@ func TestListManyIRODSCollections(t *testing.T) {
 	shutdown()
 }
 
-func TestGetIRODSCollectionMeta(t *testing.T) {
+func TestListIRODSCollectionMeta(t *testing.T) {
 	setup()
 
-	metas, err := GetCollectionMeta(conn, "/iplant/home/iyhoi")
+	metas, err := ListCollectionMeta(conn, "/iplant/home/iyhoi")
 	if err != nil {
 		t.Errorf("err - %v", err)
 		panic(err)
@@ -118,6 +118,26 @@ func TestGetIRODSCollectionMeta(t *testing.T) {
 	} else {
 		for _, meta := range metas {
 			util.LogDebugf("Collection Meta : %v", meta)
+		}
+	}
+
+	shutdown()
+}
+
+func TestListIRODSCollectionAccess(t *testing.T) {
+	setup()
+
+	accesses, err := ListCollectionAccess(conn, "/iplant/home/iychoi")
+	if err != nil {
+		t.Errorf("err - %v", err)
+		panic(err)
+	}
+
+	if len(accesses) == 0 {
+		util.LogDebug("There is no accesses")
+	} else {
+		for _, access := range accesses {
+			util.LogDebugf("Collection Access : %v", access)
 		}
 	}
 
@@ -224,7 +244,7 @@ func TestGetIRODSDataObjectMasterReplica(t *testing.T) {
 	shutdown()
 }
 
-func TestGetIRODSDataObjectMeta(t *testing.T) {
+func TestListIRODSDataObjectMeta(t *testing.T) {
 	setup()
 
 	collection, err := GetCollection(conn, "/iplant/home/iychoi")
@@ -233,7 +253,7 @@ func TestGetIRODSDataObjectMeta(t *testing.T) {
 		panic(err)
 	}
 
-	metas, err := GetDataObjectMeta(conn, collection, "bench.tmp")
+	metas, err := ListDataObjectMeta(conn, collection, "all.fna.tar.gz")
 	if err != nil {
 		t.Errorf("err - %v", err)
 		panic(err)
@@ -244,6 +264,32 @@ func TestGetIRODSDataObjectMeta(t *testing.T) {
 	} else {
 		for _, meta := range metas {
 			util.LogDebugf("Data Object Meta : %v", meta)
+		}
+	}
+
+	shutdown()
+}
+
+func TestListIRODSDataObjectAccess(t *testing.T) {
+	setup()
+
+	collection, err := GetCollection(conn, "/iplant/home/iychoi")
+	if err != nil {
+		t.Errorf("err - %v", err)
+		panic(err)
+	}
+
+	accesses, err := ListDataObjectAccess(conn, collection, "bench.tmp")
+	if err != nil {
+		t.Errorf("err - %v", err)
+		panic(err)
+	}
+
+	if len(accesses) == 0 {
+		util.LogDebug("There is no accesses")
+	} else {
+		for _, access := range accesses {
+			util.LogDebugf("Data Object Access : %v", access)
 		}
 	}
 
@@ -482,6 +528,65 @@ func TestReadWriteIRODSDataObject(t *testing.T) {
 	if err != nil {
 		t.Errorf("err - %v", err)
 		panic(err)
+	}
+
+	shutdown()
+}
+
+func TestListIRODSGroupUsers(t *testing.T) {
+	setup()
+
+	users, err := ListGroupUsers(conn, "rodsadmin")
+	if err != nil {
+		t.Errorf("err - %v", err)
+		panic(err)
+	}
+
+	if len(users) == 0 {
+		util.LogDebug("There is no users in the group")
+	} else {
+		for _, user := range users {
+			util.LogDebugf("User : %v", user)
+		}
+	}
+
+	shutdown()
+}
+
+func TestSearchDataObjectsByMeta(t *testing.T) {
+	setup()
+
+	dataobjects, err := SearchDataObjectsByMeta(conn, "ipc_UUID", "3241af9a-c199-11e5-bd90-3c4a92e4a804")
+	if err != nil {
+		t.Errorf("err - %v", err)
+		panic(err)
+	}
+
+	for _, dataobject := range dataobjects {
+		util.LogDebugf("DataObject : %v", dataobject)
+		for _, replica := range dataobject.Replicas {
+			util.LogDebugf("Replica : %v", replica)
+		}
+	}
+
+	shutdown()
+}
+
+func TestSearchDataObjectsByMetaWildcard(t *testing.T) {
+	setup()
+
+	// this takes a long time to perform
+	dataobjects, err := SearchDataObjectsByMetaWildcard(conn, "ipc_UUID", "3241af9a-c199-11e5-bd90-3c4a92e4a80%")
+	if err != nil {
+		t.Errorf("err - %v", err)
+		panic(err)
+	}
+
+	for _, dataobject := range dataobjects {
+		util.LogDebugf("DataObject : %v", dataobject)
+		for _, replica := range dataobject.Replicas {
+			util.LogDebugf("Replica : %v", replica)
+		}
 	}
 
 	shutdown()
